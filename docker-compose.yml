@@ -1,0 +1,83 @@
+# =============================================================================
+# docker-compose.yml
+# Spins up Redis and RabbitMQ for the Lockdown flash-sale API.
+# MySQL is expected to be running natively on the host machine.
+#
+# Race-condition protection layers provided by this infra:
+#   - Redis  → distributed SETNX locks + rate-limit sliding windows
+#   - RabbitMQ → durable task queues so no booking request is ever silently lost
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — used for three distinct purposes:
+  #   1. Distributed seat locks  (SETNX with TTL)
+  #   2. Per-user rate limiting  (sliding-window counters)
+  #   3. Celery result backend   (task-status store)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: lockdown_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 60 1000
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lockdown_net
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ 3.12 — Celery's message broker.
+  # Durable queues ensure that even if a worker crashes mid-flight the task
+  # message survives and will be re-delivered to the next available worker.
+  # The management UI is exposed on port 15672 for observability.
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: lockdown_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"    # AMQP protocol (Celery broker)
+      - "15672:15672"  # Management UI  →  http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-lockdown}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-lockdown_secret}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-lockdown_vhost}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lockdown_net
+
+# =============================================================================
+# Named volumes — data persists across container restarts
+# =============================================================================
+volumes:
+  redis_data:
+  rabbitmq_data:
+
+# =============================================================================
+# Shared network — all containers talk to each other by service name
+# =============================================================================
+networks:
+  lockdown_net:
+    driver: bridge
