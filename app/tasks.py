@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from celery import Celery, Task
 from celery.utils.log import get_task_logger
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError, OperationalError, StaleDataError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.config import settings
 from app.database import get_db_context
