@@ -72,7 +72,6 @@ celery_app.conf.update(
             "exchange": "bookings",
             "exchange_type": "direct",
             "routing_key": "bookings",
-            "queue_arguments": {"x-queue-type": "quorum"},  # RabbitMQ quorum queue
         },
         "cancellations": {
             "exchange": "cancellations",
