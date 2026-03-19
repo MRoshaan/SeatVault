@@ -16,9 +16,11 @@ type Seat = {
   countdown?: number
 }
 
+// Relaxed the strict type here so we can catch whatever FastAPI sends
 type SeatApi = {
   id: number
-  status: "available" | "locked" | "booked" | "cancelled"
+  status?: string
+  state?: string 
 }
 
 type SeatListResponse = {
@@ -147,24 +149,35 @@ export default function SeatMap() {
 
   const syncSeatsFromBackend = React.useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}${SEATS_ENDPOINT}?event_id=${EVENT_ID}`)
+      const res = await fetch(`${API_BASE_URL}/events/${EVENT_ID}/seats`)
       if (!res.ok) return
 
-      const data: SeatListResponse = await res.json()
+      const rawData = await res.json()
+      console.log("RAW BACKEND DATA (Sync):", rawData) // <--- Debugging hook
+
+      const remoteSeats: SeatApi[] = Array.isArray(rawData) ? rawData : (rawData.seats || [])
 
       setSeats((prev) => {
         const map = new Map(prev.map((s) => [s.id, s]))
 
-        data.seats.forEach((remoteSeat) => {
+        remoteSeats.forEach((remoteSeat) => {
           if (processingSeats.current.has(remoteSeat.id)) return
 
           let status: SeatStatus = "available"
-          if (remoteSeat.status === "booked") status = "booked"
-          if (remoteSeat.status === "locked") status = "locked_other"
+          
+          // Universal Translator: catch any variation of 'booked' or 'locked'
+          const backendStatus = String(remoteSeat.status || remoteSeat.state || "").toLowerCase()
+
+          if (backendStatus === "booked" || backendStatus === "confirmed" || backendStatus === "sold") {
+            status = "booked"
+          } else if (backendStatus === "locked" || backendStatus === "processing" || backendStatus === "pending") {
+            status = "locked_other"
+          }
 
           map.set(remoteSeat.id, {
             id: remoteSeat.id,
             status,
+            countdown: map.get(remoteSeat.id)?.countdown // preserve local countdowns
           })
         })
 
@@ -172,15 +185,64 @@ export default function SeatMap() {
       })
 
       setLastUpdate(new Date().toLocaleTimeString())
-    } catch {
-      // silent on sync failures
+    } catch (error) {
+      console.error("Backend Sync Failed:", error)
     }
   }, [])
 
   React.useEffect(() => {
-    syncSeatsFromBackend()
+    let mounted = true
+
+    const loadInitial = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/events/${EVENT_ID}/seats`)
+        if (!res.ok || !mounted) return
+
+        const rawData = await res.json()
+        console.log("RAW BACKEND DATA (Initial Load):", rawData) // <--- Debugging hook
+        
+        const remoteSeats: SeatApi[] = Array.isArray(rawData) ? rawData : (rawData.seats || [])
+
+        // Build a full 1..100 list
+        const base = Array.from({ length: 100 }, (_, i) => ({
+          id: i + 1,
+          status: "available" as SeatStatus,
+        }))
+
+        const map = new Map(base.map((s) => [s.id, s]))
+
+        // Overlay the true database state
+        remoteSeats.forEach((remoteSeat) => {
+          let status: SeatStatus = "available"
+          
+          // Universal Translator
+          const backendStatus = String(remoteSeat.status || remoteSeat.state || "").toLowerCase()
+
+          if (backendStatus === "booked" || backendStatus === "confirmed" || backendStatus === "sold") {
+            status = "booked"
+          } else if (backendStatus === "locked" || backendStatus === "processing" || backendStatus === "pending") {
+            status = "locked_other"
+          }
+
+          map.set(remoteSeat.id, { id: remoteSeat.id, status })
+        })
+
+        if (mounted) {
+          setSeats(Array.from(map.values()).sort((a, b) => a.id - b.id))
+          setLastUpdate(new Date().toLocaleTimeString())
+        }
+      } catch (error) {
+        console.error("Initial Load Failed:", error)
+      }
+    }
+
+    loadInitial()
     const id = setInterval(syncSeatsFromBackend, SYNC_INTERVAL_MS)
-    return () => clearInterval(id)
+
+    return () => {
+      mounted = false
+      clearInterval(id)
+    }
   }, [syncSeatsFromBackend])
 
   const pollBookingStatus = React.useCallback(
