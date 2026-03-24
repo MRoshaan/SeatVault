@@ -89,8 +89,8 @@ export default function SeatMap() {
   const [lastUpdate, setLastUpdate] = React.useState<string | null>(null)
 
   const processingSeats = React.useRef<Set<number>>(new Set())
-  const pollingRefs = React.useRef<Map<number, NodeJS.Timeout>>(new Map())
-  const countdownRefs = React.useRef<Map<number, NodeJS.Timeout>>(new Map())
+  const pollingRefs = React.useRef<Map<number, ReturnType<typeof setInterval>>>(new Map())
+  const countdownRefs = React.useRef<Map<number, ReturnType<typeof setInterval>>>(new Map())
 
   const updateSeatStatus = React.useCallback((seatId: number, status: SeatStatus) => {
     setSeats((prev) =>
