@@ -193,7 +193,7 @@ Open **three separate terminals** (all with the virtual environment activated):
 
 **Terminal 1 — FastAPI server**
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload 
 ```
 
 **Terminal 2 — Celery worker**
