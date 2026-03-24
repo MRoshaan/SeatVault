@@ -122,7 +122,7 @@ lockdown/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/lockdown.git
+git clone https://github.com/MRoshaan/lockdown.git
 cd lockdown
 ```
 
