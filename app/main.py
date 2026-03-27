@@ -11,6 +11,7 @@
 #   GET    /events/{event_id}/seats      — list seats with status
 #   POST   /events                       — create event (admin)
 #   POST   /users                        — register user
+#   POST   /auth/login                   — issue JWT access token
 #   GET    /health                       — deep health check (Redis, RabbitMQ, MySQL)
 # =============================================================================
 
@@ -28,7 +29,14 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.database import Base, engine, get_db_context
-from app.dependencies import DbSession, LockManagerDep, RequestIdDep, SettingsDep
+from app.dependencies import (
+    CurrentUserDep,
+    DbSession,
+    LockManagerDep,
+    RequestIdDep,
+    SettingsDep,
+    create_access_token,
+)
 from app.models import Booking, BookingStatus, Event, Seat, SeatStatus, User
 from app.redis_client import lock_manager
 from app.schemas import (
@@ -40,9 +48,11 @@ from app.schemas import (
     EventCreate,
     EventResponse,
     HealthResponse,
+    LoginRequest,
     SeatListResponse,
     SeatResponse,
     ServiceHealth,
+    TokenResponse,
     UserCreate,
     UserResponse,
 )
@@ -194,6 +204,7 @@ def book_seat(
     lm: LockManagerDep,
     cfg: SettingsDep,
     request_id: RequestIdDep,
+    current_user: CurrentUserDep,
 ) -> BookingAcceptedResponse:
     """
     The "Lockdown" booking flow — the crown jewel of this API.
@@ -207,6 +218,15 @@ def book_seat(
     5. Optimistic locking (version) (Celery detects stale DB state and retries)
     6. DB UNIQUE constraint on bookings.seat_id (final hard database guardrail)
     """
+
+    if current_user.id != payload.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "USER_MISMATCH",
+                "message": "Token user does not match payload user_id",
+            },
+        )
 
     # -----------------------------------------------------------------------
     # Layer 0: Rate limiting (sliding window, pure Redis)
@@ -488,7 +508,7 @@ def get_booking(booking_id: int, db: DbSession) -> BookingDetailResponse:
     summary="Cancel a confirmed booking",
     tags=["Bookings"],
 )
-def cancel_booking(booking_id: int, db: DbSession) -> dict:
+def cancel_booking(booking_id: int, db: DbSession, current_user: CurrentUserDep) -> dict:
     booking: Booking | None = db.get(Booking, booking_id)
     if booking is None:
         raise HTTPException(
@@ -501,6 +521,14 @@ def cancel_booking(booking_id: int, db: DbSession) -> dict:
             detail={
                 "code": "BOOKING_NOT_CANCELLABLE",
                 "message": f"Booking {booking_id} is in status '{booking.status}' and cannot be cancelled",
+            },
+        )
+    if booking.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "BOOKING_FORBIDDEN",
+                "message": "You can only cancel your own bookings",
             },
         )
 
@@ -597,6 +625,37 @@ def list_seats(event_id: int, db: DbSession) -> SeatListResponse:
 # =============================================================================
 # USERS
 # =============================================================================
+
+@app.post(
+    "/auth/login",
+    response_model=TokenResponse,
+    summary="Authenticate and receive JWT access token",
+    tags=["Auth"],
+)
+def login(payload: LoginRequest, db: DbSession, cfg: SettingsDep) -> TokenResponse:
+    user = db.execute(
+        select(User).where(User.email == payload.email)
+    ).scalar_one_or_none()
+
+    # Placeholder check for this demo project's fake password format.
+    if user is None or user.hashed_password != f"hashed_{payload.password}":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_CREDENTIALS", "message": "Incorrect email or password"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "USER_INACTIVE", "message": "This account is deactivated"},
+        )
+
+    token = create_access_token(user=user, settings=cfg)
+    return TokenResponse(
+        access_token=token,
+        expires_in=cfg.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user_id=user.id,
+    )
 
 @app.post(
     "/users",

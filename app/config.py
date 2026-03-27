@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     # Payment simulation delay (seconds) — replace with real gateway call
     PAYMENT_SIMULATION_DELAY: int = 3
 
+    # -------------------------------------------------------------------------
+    # JWT authentication
+    # -------------------------------------------------------------------------
+    JWT_SECRET_KEY: str = "change_me_in_env"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
 
 @lru_cache
 def get_settings() -> Settings:
