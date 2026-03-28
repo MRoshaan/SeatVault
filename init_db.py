@@ -35,6 +35,7 @@ def seed_sample_data() -> None:
     from app.database import SessionLocal
     from app.models import Event, Seat, SeatStatus, User
     from app.redis_client import lock_manager
+    from app.security import hash_password
 
     db = SessionLocal()
 
@@ -50,7 +51,7 @@ def seed_sample_data() -> None:
             user = User(
                 email="alice@example.com",
                 full_name="Alice Wonderland",
-                hashed_password="hashed_supersecret123",  # use bcrypt in production
+                hashed_password=hash_password("supersecret123"),
                 is_active=True,
                 is_verified=True,
             )
@@ -59,6 +60,12 @@ def seed_sample_data() -> None:
             logger.info("Created sample user: alice@example.com (id=%s)", user.id)
         else:
             user = existing_user
+            if user.hashed_password.startswith("hashed_"):
+                # One-time migration for legacy demo seed password format.
+                legacy_plain = user.hashed_password.removeprefix("hashed_")
+                user.hashed_password = hash_password(legacy_plain)
+                db.add(user)
+                logger.info("Migrated sample user password to bcrypt (id=%s)", user.id)
             logger.info("Sample user already exists (id=%s)", user.id)
 
         # ---------------------------------------------------------------

@@ -12,6 +12,7 @@ type SeatStatus = "available" | "processing" | "booked" | "locked_other"
 
 type Seat = {
   id: number
+  seatCode?: string
   status: SeatStatus
   countdown?: number
 }
@@ -19,12 +20,9 @@ type Seat = {
 // Relaxed the strict type here so we can catch whatever FastAPI sends
 type SeatApi = {
   id: number
+  seat_code?: string
   status?: string
-  state?: string 
-}
-
-type SeatListResponse = {
-  seats: SeatApi[]
+  state?: string
 }
 
 type BookingAcceptedResponse = {
@@ -73,19 +71,19 @@ function getSeatInfo(seatId: number): SeatInfo {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
-const SEATS_ENDPOINT = "/seats"
-const EVENT_ID = 1
 const SYNC_INTERVAL_MS = 3000
 
-export default function SeatMap() {
+type SeatMapProps = {
+  authToken: string
+  currentUserId: number
+  eventId: number
+  onBookingAccepted?: (bookingId: number, taskId: string) => void
+}
+
+export default function SeatMap({ authToken, currentUserId, eventId, onBookingAccepted }: SeatMapProps) {
   const { toast } = useToast()
 
-  const [seats, setSeats] = React.useState<Seat[]>(
-    Array.from({ length: 100 }, (_, i) => ({
-      id: i + 1,
-      status: "available",
-    }))
-  )
+  const [seats, setSeats] = React.useState<Seat[]>([])
   const [lastUpdate, setLastUpdate] = React.useState<string | null>(null)
 
   const processingSeats = React.useRef<Set<number>>(new Set())
@@ -149,7 +147,7 @@ export default function SeatMap() {
 
   const syncSeatsFromBackend = React.useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/events/${EVENT_ID}/seats`)
+      const res = await fetch(`${API_BASE_URL}/events/${eventId}/seats`)
       if (!res.ok) return
 
       const rawData = await res.json()
@@ -176,26 +174,38 @@ export default function SeatMap() {
 
           map.set(remoteSeat.id, {
             id: remoteSeat.id,
+            seatCode: remoteSeat.seat_code,
             status,
             countdown: map.get(remoteSeat.id)?.countdown // preserve local countdowns
           })
         })
 
-        return Array.from(map.values()).sort((a, b) => a.id - b.id)
+        // Keep only seats from the selected event payload to avoid cross-event seat leakage.
+        const filtered = remoteSeats
+          .map((remoteSeat) => map.get(remoteSeat.id))
+          .filter((seat): seat is Seat => Boolean(seat))
+        return filtered.sort((a, b) => a.id - b.id)
       })
 
       setLastUpdate(new Date().toLocaleTimeString())
     } catch (error) {
       console.error("Backend Sync Failed:", error)
     }
-  }, [])
+  }, [eventId])
 
   React.useEffect(() => {
+    processingSeats.current.clear()
+    pollingRefs.current.forEach((intervalId) => clearInterval(intervalId))
+    countdownRefs.current.forEach((intervalId) => clearInterval(intervalId))
+    pollingRefs.current.clear()
+    countdownRefs.current.clear()
+    setSeats([])
+
     let mounted = true
 
     const loadInitial = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/events/${EVENT_ID}/seats`)
+        const res = await fetch(`${API_BASE_URL}/events/${eventId}/seats`)
         if (!res.ok || !mounted) return
 
         const rawData = await res.json()
@@ -203,13 +213,7 @@ export default function SeatMap() {
         
         const remoteSeats: SeatApi[] = Array.isArray(rawData) ? rawData : (rawData.seats || [])
 
-        // Build a full 1..100 list
-        const base = Array.from({ length: 100 }, (_, i) => ({
-          id: i + 1,
-          status: "available" as SeatStatus,
-        }))
-
-        const map = new Map(base.map((s) => [s.id, s]))
+        const map = new Map<number, Seat>()
 
         // Overlay the true database state
         remoteSeats.forEach((remoteSeat) => {
@@ -224,7 +228,11 @@ export default function SeatMap() {
             status = "locked_other"
           }
 
-          map.set(remoteSeat.id, { id: remoteSeat.id, status })
+          map.set(remoteSeat.id, {
+            id: remoteSeat.id,
+            seatCode: remoteSeat.seat_code,
+            status,
+          })
         })
 
         if (mounted) {
@@ -243,7 +251,7 @@ export default function SeatMap() {
       mounted = false
       clearInterval(id)
     }
-  }, [syncSeatsFromBackend])
+  }, [eventId, syncSeatsFromBackend])
 
   const pollBookingStatus = React.useCallback(
     (seatId: number, taskId: string) => {
@@ -304,16 +312,20 @@ export default function SeatMap() {
     try {
       const res = await fetch(`${API_BASE_URL}/book/${seatId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({
-          user_id: 1,
-          event_id: EVENT_ID,
+          user_id: currentUserId,
+          event_id: eventId,
           idempotency_key: idempotencyKey,
         }),
       })
 
       if (res.status === 202) {
         const data: BookingAcceptedResponse = await res.json()
+        onBookingAccepted?.(data.booking_id, data.task_id)
         startCountdown(seatId, data.lock_ttl_seconds)
         pollBookingStatus(seatId, data.task_id)
         toast({
@@ -432,17 +444,18 @@ export default function SeatMap() {
                     className={`h-11 w-full font-semibold ${buildSeatClass(seat)}`}
                     disabled={seat.status !== "available"}
                     onClick={() => handleSeatClick(seat.id)}
+                    title={seat.seatCode || `Seat ${seat.id}`}
                   >
                     {seat.status === "processing" ? (
                       <span className="flex items-center gap-2">
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        {seat.id}
+                        {seat.seatCode || seat.id}
                         {typeof seat.countdown === "number" && (
                           <span className="text-xs text-slate-800">{seat.countdown}s</span>
                         )}
                       </span>
                     ) : (
-                      seat.id
+                      seat.seatCode || seat.id
                     )}
                   </Button>
                 </TooltipTrigger>

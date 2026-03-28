@@ -28,6 +28,7 @@ email-validator==2.1.1           # Required by pydantic EmailStr
 # --- Utilities ---
 python-dotenv==1.0.1             # Load .env in development
 PyJWT==2.9.0                     # JWT token signing and verification
+passlib==1.7.4                   # Password hashing for user credentials
 
 # --- Development / Testing (optional — remove in slim prod image) ---
 httpx==0.27.0                    # async HTTP client for TestClient

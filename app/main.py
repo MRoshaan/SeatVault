@@ -11,6 +11,7 @@
 #   GET    /events/{event_id}/seats      — list seats with status
 #   POST   /events                       — create event (admin)
 #   POST   /users                        — register user
+#   GET    /users/{user_id}/bookings     — list bookings for authenticated user
 #   POST   /auth/login                   — issue JWT access token
 #   GET    /health                       — deep health check (Redis, RabbitMQ, MySQL)
 # =============================================================================
@@ -20,6 +21,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
@@ -56,6 +58,7 @@ from app.schemas import (
     UserCreate,
     UserResponse,
 )
+from app.security import hash_password, verify_password
 from app.tasks import celery_app, process_booking, process_cancellation
 
 # ---------------------------------------------------------------------------
@@ -582,6 +585,47 @@ def create_event(payload: EventCreate, db: DbSession) -> EventResponse:
         is_active=True,
     )
     db.add(event)
+    db.flush()  # ensures event.id is available before creating seats
+
+    # Generate seat rows for new events so frontend seat maps work immediately.
+    remaining = payload.total_seats
+    tier_plan: list[tuple[str, int, Decimal]] = []
+
+    vip_count = min(10, remaining)
+    if vip_count > 0:
+        tier_plan.append(("VIP", vip_count, Decimal("250.00")))
+        remaining -= vip_count
+
+    a_count = min(30, remaining)
+    if a_count > 0:
+        tier_plan.append(("A", a_count, Decimal("120.00")))
+        remaining -= a_count
+
+    b_count = min(30, remaining)
+    if b_count > 0:
+        tier_plan.append(("B", b_count, Decimal("80.00")))
+        remaining -= b_count
+
+    if remaining > 0:
+        tier_plan.append(("GA", remaining, Decimal("45.00")))
+
+    seats_to_create: list[Seat] = []
+    for section, count, price in tier_plan:
+        for seat_num in range(1, count + 1):
+            seats_to_create.append(
+                Seat(
+                    event_id=event.id,
+                    seat_code=f"{section}-{seat_num:03d}",
+                    section=section,
+                    row=None,
+                    seat_number=str(seat_num),
+                    price=price,
+                    status=SeatStatus.AVAILABLE,
+                    version=0,
+                )
+            )
+
+    db.add_all(seats_to_create)
     db.commit()
     db.refresh(event)
 
@@ -637,8 +681,23 @@ def login(payload: LoginRequest, db: DbSession, cfg: SettingsDep) -> TokenRespon
         select(User).where(User.email == payload.email)
     ).scalar_one_or_none()
 
-    # Placeholder check for this demo project's fake password format.
-    if user is None or user.hashed_password != f"hashed_{payload.password}":
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_CREDENTIALS", "message": "Incorrect email or password"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    password_ok = verify_password(payload.password, user.hashed_password)
+    if not password_ok and user.hashed_password.startswith("hashed_"):
+        legacy_plain = user.hashed_password.removeprefix("hashed_")
+        if payload.password == legacy_plain:
+            user.hashed_password = hash_password(payload.password)
+            db.add(user)
+            db.commit()
+            password_ok = True
+
+    if not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_CREDENTIALS", "message": "Incorrect email or password"},
@@ -676,9 +735,7 @@ def create_user(payload: UserCreate, db: DbSession) -> UserResponse:
             detail={"code": "EMAIL_TAKEN", "message": "This email address is already registered"},
         )
 
-    # In production: use bcrypt or argon2 to hash the password
-    # import bcrypt; hashed = bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt())
-    hashed_password = f"hashed_{payload.password}"  # ← REPLACE with real hashing
+    hashed_password = hash_password(payload.password)
 
     user = User(
         email=payload.email,
@@ -693,6 +750,31 @@ def create_user(payload: UserCreate, db: DbSession) -> UserResponse:
 
     logger.info("User CREATED id=%s email=%r", user.id, user.email)
     return UserResponse.model_validate(user)
+
+
+@app.get(
+    "/users/{user_id}/bookings",
+    response_model=list[BookingDetailResponse],
+    summary="List bookings for a user",
+    tags=["Users"],
+)
+def list_user_bookings(user_id: int, db: DbSession, current_user: CurrentUserDep) -> list[BookingDetailResponse]:
+    if user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "BOOKINGS_FORBIDDEN",
+                "message": "You can only view your own bookings",
+            },
+        )
+
+    bookings = db.execute(
+        select(Booking)
+        .where(Booking.user_id == user_id)
+        .order_by(Booking.created_at.desc())
+    ).scalars().all()
+
+    return [BookingDetailResponse.model_validate(booking) for booking in bookings]
 
 
 # =============================================================================
