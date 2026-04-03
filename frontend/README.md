@@ -1,17 +1,52 @@
-# 🎫 SeatVault Frontend (Lockdown Edition)
+# SeatVault Frontend
 
-A high-performance React + Vite + TypeScript client for the SeatVault ticketing system, featuring real-time seat synchronization, distributed locking visualization, and JWT-secured booking.
+React + Vite + Tailwind + Shadcn/UI client for the SeatVault ticketing system.
 
-## 🚀 Getting Started
+## Run Frontend Only
 
-### 1. Prerequisites
-- **Node.js** (v18+)
-- **SeatVault Backend** running on port 8000
-- **Redis** (for seat locking logic)
+```bash
+cd C:\lockdown\frontend
+npm install
+npm run dev
+```
 
-### 2. Configure Environment
-Create a `.env` file in the `frontend` folder:
+Open: http://localhost:5173
+
+## Configure API URL & Auth
+
+Create `frontend/.env`:
 
 ```env
 VITE_API_BASE_URL=http://localhost:8000
 VITE_AUTH_ENABLED=true
+```
+
+## Authentication (JWT)
+
+- Login returns a signed JWT from the backend
+- Token is stored in `localStorage`
+- Sent with requests using:
+
+```http
+Authorization: Bearer <token>
+```
+
+## Run Full Stack (Backend + Worker + Frontend)
+
+From the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\lockdown\start_all.ps1
+```
+
+## Stop All Services
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\lockdown\stop_all.ps1
+```
+
+## Notes
+
+- Ensure backend is running at `http://localhost:8000`
+- JWT in `localStorage` is not secure for production (use HttpOnly cookies later)
+- Check `.env` and CORS if API calls fail
