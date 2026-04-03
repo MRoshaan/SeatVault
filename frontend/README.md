@@ -1,35 +1,17 @@
-# SeatVault Frontend
+# 🎫 SeatVault Frontend (Lockdown Edition)
 
-React + Vite + Tailwind + Shadcn/UI client for the SeatVault ticketing system.
+A high-performance React + Vite + TypeScript client for the SeatVault ticketing system, featuring real-time seat synchronization, distributed locking visualization, and JWT-secured booking.
 
-## Run Frontend Only
+## 🚀 Getting Started
 
-```bash
-cd C:\lockdown\frontend
-npm install
-npm run dev
-```
+### 1. Prerequisites
+- **Node.js** (v18+)
+- **SeatVault Backend** running on port 8000
+- **Redis** (for seat locking logic)
 
-Open: http://localhost:5173
-
-## Configure API URL
-
-Create `frontend/.env`:
+### 2. Configure Environment
+Create a `.env` file in the `frontend` folder:
 
 ```env
 VITE_API_BASE_URL=http://localhost:8000
-```
-
-## Run Full Stack (Backend + Worker + Frontend)
-
-From the repo root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\lockdown\start_all.ps1
-```
-
-## Stop All Services
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\lockdown\stop_all.ps1
-```
+VITE_AUTH_ENABLED=true
